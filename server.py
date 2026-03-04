@@ -1,123 +1,49 @@
 from flask import Flask, request, jsonify
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
-import torch
+from transformers import pipeline
+import os
 
 app = Flask(__name__)
+port = int(os.environ.get("PORT", 5000))
 
-# Inizializza il modello e tokenizer
-print("Caricamento del modello GPT-2...")
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-model = GPT2LMHeadModel.from_pretrained("gpt2")
-print("Modello caricato con successo!")
+# Generator lazy loading
+generator = None
 
-# Configura il padding token
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
+def get_generator():
+    global generator
+    if generator is None:
+        generator = pipeline(
+            "text-generation", 
+            model="distilgpt2",
+            tokenizer="distilgpt2",
+            device=-1  # usa CPU
+        )
+    return generator
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({
-        'status': 'online', 
-        'model': 'GPT-2',
-        'ready': True
-    })
+    return jsonify({"status": "ready", "model": "distilgpt2"})
 
 @app.route('/generate', methods=['POST'])
-def generate_text():
+def generate():
     try:
-        data = request.get_json()
+        data = request.json
+        prompt = data.get('prompt', 'Hello')
         
-        if not data or 'prompt' not in data:
-            return jsonify({
-                'error': 'Il campo "prompt" è obbligatorio'
-            }), 400
-        
-        prompt = data['prompt']
-        max_length = data.get('max_length', 100)
-        temperature = data.get('temperature', 0.7)
-        
-        # Tokenizza l'input
-        inputs = tokenizer.encode(prompt, return_tensors='pt')
-        
-        # Genera il testo
-        with torch.no_grad():
-            outputs = model.generate(
-                inputs,
-                max_length=max_length,
-                num_return_sequences=1,
-                temperature=temperature,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-                repetition_penalty=1.1
-            )
-        
-        # Decodifica l'output
-        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        gen = get_generator()
+        result = gen(
+            prompt,
+            max_length=data.get('max_length', 50),
+            temperature=0.7,
+            do_sample=True
+        )
         
         return jsonify({
-            'prompt': prompt,
-            'generated_text': generated_text,
-            'tokens_generated': len(outputs[0]) - len(inputs[0])
+            "success": True,
+            "generated_text": result[0]['generated_text']
         })
     
     except Exception as e:
-        return jsonify({
-            'error': f'Errore durante la generazione: {str(e)}'
-        }), 500
-
-@app.route('/chat', methods=['POST'])
-def chat():
-    """Endpoint per interazioni conversazionali"""
-    try:
-        data = request.get_json()
-        message = data.get('message', 'Ciao!')
-        
-        prompt = f"Utente: {message}\nAI:"
-        
-        inputs = tokenizer.encode(prompt, return_tensors='pt')
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                inputs,
-                max_length=len(inputs[0]) + 50,
-                temperature=0.8,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id
-            )
-        
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        # Estrae solo la parte dopo "AI:"
-        if "AI:" in response:
-            ai_response = response.split("AI:")[-1].strip()
-        else:
-            ai_response = response.replace(prompt, "").strip()
-        
-        return jsonify({
-            'user_message': message,
-            'ai_response': ai_response
-        })
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/')
-def home():
-    return """
-    <html>
-        <head>
-            <title>GPT-2 API</title>
-        </head>
-        <body>
-            <h1>GPT-2 API è attiva! 🚀</h1>
-            <p>Endpoints disponibili:</p>
-            <ul>
-                <li>POST /generate - Genera testo</li>
-                <li>POST /chat - Chat interattiva</li>
-                <li>GET /health - Stato del servizio</li>
-            </ul>
-        </body>
-    </html>
-    """
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)
